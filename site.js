@@ -16,10 +16,10 @@
       intro = $(".intro", hero), heroIn = $(".hero-in", hero), bg = $(".hero-bg img", hero), luz = $(".door-glow", hero), porta = $(".door", hero);
     let ox = 0, oy = 0, S = 8;
     const medir = () => {
-      const r = porta.getBoundingClientRect(), z = zoom.getBoundingClientRect();
-      // medir sem transformação
-      zoom.style.transform = "none"; const r2 = porta.getBoundingClientRect();
-      ox = r2.left + r2.width / 2; oy = r2.top + r2.height / 2;
+      // medir sem transformação, relativo ao próprio .intro-zoom (vale em qualquer posição de rolagem)
+      zoom.style.transform = "none";
+      const r2 = porta.getBoundingClientRect(), z = zoom.getBoundingClientRect();
+      ox = r2.left - z.left + r2.width / 2; oy = r2.top - z.top + r2.height / 2;
       S = Math.max(innerWidth / r2.width, innerHeight / r2.height) * 1.25;
       zoom.style.transformOrigin = `${ox}px ${oy}px`;
       upd();
@@ -43,6 +43,13 @@
     addEventListener("resize", medir); addEventListener("load", medir); medir();
     addEventListener("scroll", () => requestAnimationFrame(upd), { passive: true });
     $(".intro-skip", hero)?.addEventListener("click", () => scrollTo({ top: hero.offsetHeight - innerHeight + 2, behavior: "smooth" }));
+    // voltar ao início: salto direto ao topo, sem "rebobinar" a porta numa rolagem suave
+    $$('a[href="#inicio"]').forEach(a => a.addEventListener("click", e => {
+      e.preventDefault();
+      scrollTo({ top: 0, behavior: "instant" });
+      upd();
+    }));
+    addEventListener("pageshow", medir);
   }
 
   /* ---------- Cabeçalho e progresso ---------- */
