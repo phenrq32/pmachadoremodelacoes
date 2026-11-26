@@ -9,6 +9,7 @@ import { RectAreaLightUniformsLib } from "three/addons/lights/RectAreaLightUnifo
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
 const WHATSAPP = "351935624419";
 THREE.Cache.enabled = true;
@@ -117,31 +118,36 @@ async function montarComposer() {
   const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: MOBILE ? 0 : 4 });
   composer = new EffectComposer(renderer, rt);
   composer.addPass(new RenderPass(scene, camera));
-  if (!MOBILE) {
+  composer.addPass(new OutputPass());
+  resize();
+}
+async function ativarAO() {
+  if (MOBILE || aoPass) return;
+  {
     try {
       const { GTAOPass } = await import("three/addons/postprocessing/GTAOPass.js");
       aoPass = new GTAOPass(scene, camera, 1, 1);
       aoPass.updateGtaoMaterial({ radius: .35, distanceExponent: 1.4, thickness: 1, scale: 1, samples: 16 });
       aoPass.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
       aoPass.blendIntensity = .9;
-      composer.addPass(aoPass);
+      composer.insertPass(aoPass, 1); resize(); atualizarComposer(estado());
     } catch (e) { aoPass = null; }
   }
-  composer.addPass(new OutputPass());
-  resize();
 }
 
 /* ================= Carregamento ================= */
-const manager = new THREE.LoadingManager();
+const manager = new THREE.LoadingManager();   // texturas necessárias para a vista atual
 manager.onProgress = (u, a, t) => { $("#loadBar").style.width = Math.round(a / t * 100) + "%"; };
+const fundo = new THREE.LoadingManager();     // modelos e céu: carregam em segundo plano
+let pendentes = 0;
 const TL = new THREE.TextureLoader(manager);
-const GL = new GLTFLoader(manager);
+const GL = new GLTFLoader(fundo);
 const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
 const PBR = {};
 function pbr(id) {
   if (PBR[id]) return PBR[id];
-  const ld = (n, srgb) => { const t = TL.load(`assets/tex/${id}_${n}.jpg`); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = aniso; if (srgb) t.colorSpace = THREE.SRGBColorSpace; return t; };
+  const ld = (n, srgb) => { pendentes++; const t = TL.load(`assets/tex/${id}_${n}.jpg`, () => { pendentes--; verificarPronto(); }, undefined, () => { pendentes--; verificarPronto(); }); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = aniso; if (srgb) t.colorSpace = THREE.SRGBColorSpace; return t; };
   return PBR[id] = { map: ld("diff", 1), normalMap: ld("nor"), roughnessMap: ld("rough") };
 }
 function pbrRep(id, size) {
@@ -158,19 +164,20 @@ function canvasTex(N, draw, srgb = true, rep = 1) {
 function ruido(x, N, amp, r) { const im = x.getImageData(0, 0, N, N), d = im.data; for (let i = 0; i < d.length; i += 4) { const n = (r() - .5) * amp; d[i] += n; d[i + 1] += n; d[i + 2] += n; } x.putImageData(im, 0, 0); }
 
 /* ---- microcimento procedimental ---- */
+const offs = (v, r, N) => [0, ...(v - r < 0 ? [N] : []), ...(v + r > N ? [-N] : [])];
 function texMicro(rustico, seed) {
   const r = rng(seed);
   const draw = (x, N) => {
     x.fillStyle = "rgb(236,236,236)"; x.fillRect(0, 0, N, N);
     for (let i = 0; i < (rustico ? 95 : 75); i++) {
       const px = r() * N, py = r() * N, rad = 60 + r() * 220, v = r() > .5 ? 255 : 196, a = (rustico ? .3 : .22) * (.4 + r() * .6);
-      for (const ox of [-N, 0, N]) for (const oy of [-N, 0, N]) { const g = x.createRadialGradient(px + ox, py + oy, 0, px + ox, py + oy, rad); g.addColorStop(0, `rgba(${v},${v},${v},${a})`); g.addColorStop(1, `rgba(${v},${v},${v},0)`); x.fillStyle = g; x.fillRect(px + ox - rad, py + oy - rad, rad * 2, rad * 2); }
+      for (const ox of offs(px, rad, N)) for (const oy of offs(py, rad, N)) { const g = x.createRadialGradient(px + ox, py + oy, 0, px + ox, py + oy, rad); g.addColorStop(0, `rgba(${v},${v},${v},${a})`); g.addColorStop(1, `rgba(${v},${v},${v},0)`); x.fillStyle = g; x.fillRect(px + ox - rad, py + oy - rad, rad * 2, rad * 2); }
     }
     x.lineCap = "round";
     for (let i = 0; i < (rustico ? 260 : 160); i++) {
       const cx = r() * N, cy = r() * N, rad = 60 + r() * 220, a0 = r() * 6.28, len = .35 + r() * .9, v = r() > .45 ? 255 : 188;
       x.strokeStyle = `rgba(${v},${v},${v},${(rustico ? .09 : .05) * (.5 + r())})`; x.lineWidth = 8 + r() * (rustico ? 46 : 30);
-      for (const ox of [-N, 0, N]) for (const oy of [-N, 0, N]) { x.beginPath(); x.arc(cx + ox, cy + oy, rad, a0, a0 + len); x.stroke(); }
+      for (const ox of offs(cx, rad + 30, N)) for (const oy of offs(cy, rad + 30, N)) { x.beginPath(); x.arc(cx + ox, cy + oy, rad, a0, a0 + len); x.stroke(); }
     }
     ruido(x, N, rustico ? 22 : 9, r);
     if (rustico) { const im = x.getImageData(0, 0, N, N), d = im.data; for (let k = 0; k < 9000; k++) { const p = (Math.floor(r() * N) * N + Math.floor(r() * N)) * 4, v = 150 + r() * 50; d[p] = d[p + 1] = d[p + 2] = v; } x.putImageData(im, 0, 0); }
@@ -210,20 +217,24 @@ function texParedeVelha(rep) {
     else { fissuras.forEach(p => { x.beginPath(); p.forEach(([a, b], i) => i ? x.lineTo(a, b) : x.moveTo(a, b)); x.stroke(); }); x.fillStyle = "rgba(60,50,40,.7)"; buracos.forEach(([a, b, s]) => { x.beginPath(); x.arc(a, b, s, 0, 6.3); x.fill(); }); }
   }, true, 1 / 2);
 }
-const TX = {};
-function txProc() {
-  TX.mF = texMicro(false, 1234); TX.mR = texMicro(true, 98765);
-  TX.placas = texPladur(false); TX.juntas = texPladur(true);
-  TX.velha = texParedeVelha(false); TX.reparada = texParedeVelha(true);
-  TX.rolo = canvasTex(512, (x, N) => { x.fillStyle = "#808080"; x.fillRect(0, 0, N, N); ruido(x, N, 40, rng(5)); }, false, 1 / .6);
-  TX.demao = canvasTex(1024, (x, N) => { const r = rng(11); x.fillStyle = "#fff"; x.fillRect(0, 0, N, N); for (let i = 0; i < 120; i++) { const w = 60 + r() * 80, xx = r() * N; x.fillStyle = `rgba(${r() > .5 ? "255,255,255" : "205,205,205"},${.25 + r() * .35})`; x.fillRect(xx, r() * N * .2, w, N * (.6 + r() * .6)); } }, true, 1 / 2);
-  TX.kraft = canvasTex(512, (x, N) => { x.fillStyle = "#c4a479"; x.fillRect(0, 0, N, N); ruido(x, N, 26, rng(8)); x.strokeStyle = "rgba(90,70,40,.25)"; for (let i = 0; i < 30; i++) { x.beginPath(); x.moveTo(Math.random() * N, 0); x.lineTo(Math.random() * N, N); x.stroke(); } }, true, 1 / 1.2);
-  TX.malha = canvasTex(256, (x, N) => { x.fillStyle = "#000"; x.fillRect(0, 0, N, N); x.fillStyle = "#9a9a9a"; for (let i = 0; i < N; i += 32) { x.fillRect(i, 0, 2, N); x.fillRect(0, i, N, 2); } }, false, 1 / .3);
-  TX.cola = canvasTex(512, (x, N) => { x.fillStyle = "#a9a6a0"; x.fillRect(0, 0, N, N); for (let i = 0; i < N; i += 14) { x.fillStyle = "rgba(60,58,55,.35)"; x.fillRect(0, i, N, 5); } ruido(x, N, 16, rng(3)); }, true, 1 / .5);
-  TX.manta = canvasTex(256, (x, N) => { x.fillStyle = "#9fb4c2"; x.fillRect(0, 0, N, N); ruido(x, N, 30, rng(9)); }, true, 1 / .5);
-  TX.la = canvasTex(256, (x, N) => { x.fillStyle = "#d6bf7e"; x.fillRect(0, 0, N, N); ruido(x, N, 60, rng(21)); }, true, 1 / .4);
-  TX.arte = canvasTex(512, (x, N) => { const g = x.createLinearGradient(0, 0, N, N); g.addColorStop(0, "#c9b28c"); g.addColorStop(1, "#6f5b45"); x.fillStyle = g; x.fillRect(0, 0, N, N); x.fillStyle = "rgba(240,232,220,.85)"; x.beginPath(); x.arc(N * .62, N * .42, N * .2, 0, 6.3); x.fill(); x.fillStyle = "rgba(30,28,26,.8)"; x.fillRect(N * .18, N * .6, N * .5, N * .06); }, true, 1);
-}
+const TXF = {
+  mF: () => texMicro(false, 1234),
+  mR: () => texMicro(true, 98765),
+  placas: () => texPladur(false),
+  juntas: () => texPladur(true),
+  velha: () => texParedeVelha(false),
+  reparada: () => texParedeVelha(true),
+  rolo: () => canvasTex(512, (x, N) => { x.fillStyle = "#808080"; x.fillRect(0, 0, N, N); ruido(x, N, 40, rng(5)); }, false, 1 / .6),
+  demao: () => canvasTex(1024, (x, N) => { const r = rng(11); x.fillStyle = "#fff"; x.fillRect(0, 0, N, N); for (let i = 0; i < 120; i++) { const w = 60 + r() * 80, xx = r() * N; x.fillStyle = `rgba(${r() > .5 ? "255,255,255" : "205,205,205"},${.25 + r() * .35})`; x.fillRect(xx, r() * N * .2, w, N * (.6 + r() * .6)); } }, true, 1 / 2),
+  kraft: () => canvasTex(512, (x, N) => { x.fillStyle = "#c4a479"; x.fillRect(0, 0, N, N); ruido(x, N, 26, rng(8)); x.strokeStyle = "rgba(90,70,40,.25)"; for (let i = 0; i < 30; i++) { x.beginPath(); x.moveTo(Math.random() * N, 0); x.lineTo(Math.random() * N, N); x.stroke(); } }, true, 1 / 1.2),
+  malha: () => canvasTex(256, (x, N) => { x.fillStyle = "#000"; x.fillRect(0, 0, N, N); x.fillStyle = "#9a9a9a"; for (let i = 0; i < N; i += 32) { x.fillRect(i, 0, 2, N); x.fillRect(0, i, N, 2); } }, false, 1 / .3),
+  cola: () => canvasTex(512, (x, N) => { x.fillStyle = "#a9a6a0"; x.fillRect(0, 0, N, N); for (let i = 0; i < N; i += 14) { x.fillStyle = "rgba(60,58,55,.35)"; x.fillRect(0, i, N, 5); } ruido(x, N, 16, rng(3)); }, true, 1 / .5),
+  manta: () => canvasTex(256, (x, N) => { x.fillStyle = "#9fb4c2"; x.fillRect(0, 0, N, N); ruido(x, N, 30, rng(9)); }, true, 1 / .5),
+  la: () => canvasTex(256, (x, N) => { x.fillStyle = "#d6bf7e"; x.fillRect(0, 0, N, N); ruido(x, N, 60, rng(21)); }, true, 1 / .4),
+  arte: () => canvasTex(512, (x, N) => { const g = x.createLinearGradient(0, 0, N, N); g.addColorStop(0, "#c9b28c"); g.addColorStop(1, "#6f5b45"); x.fillStyle = g; x.fillRect(0, 0, N, N); x.fillStyle = "rgba(240,232,220,.85)"; x.beginPath(); x.arc(N * .62, N * .42, N * .2, 0, 6.3); x.fill(); x.fillStyle = "rgba(30,28,26,.8)"; x.fillRect(N * .18, N * .6, N * .5, N * .06); }, true, 1)
+};
+const TXC = {};
+const TX = new Proxy({}, { get: (_, k) => TXC[k] || (TXC[k] = TXF[k]()) });
 
 /* ================= Materiais ================= */
 const CACHE = {};
@@ -337,7 +348,7 @@ function construirCasco() {
     .forEach(a => SUP.paredes.push(caixa(...a.slice(0, 3), null, ...a.slice(3), c)));
   SUP.paredes.push(caixa(.12, H, D + .12, null, hw + .06, H / 2, -.06, c));
   // laje (teto estrutural)
-  M.laje = pbrMat("concrete_floor_02", 3, { color: "#d9d6d0" });
+  M.laje = std({ color: 0xcfccc6, roughness: .95 });
   SUP.laje.push(caixa(W + .3, .14, D + .3, M.laje, 0, H + .07, 0, c));
   // janela
   const jcz = (JZ0 + JZ1) / 2, jcy = (JY0 + JY1) / 2;
@@ -700,8 +711,14 @@ function aplicarLuz(st) {
 }
 
 /* ================= Aplicar estado ================= */
+let pronto = false, arrancou = false;
+const feito = {};
 function aplicarEstado() {
   const st = estado(), c = cena(), ext = c === "fachada";
+  if (ext && !feito.ext) { feito.ext = 1; construirExterior(); }
+  if (c === "sala" && !feito.sala) { feito.sala = 1; construirSala(); }
+  if ((st.obra || st.prot || st.entulho) && !feito.obra) { feito.obra = 1; construirObra(); }
+  if (!ext) SUP.laje[0].material = st.teto === "laje" ? pbrMat("concrete_floor_02", 3, { color: "#d9d6d0" }) : M.laje;
   G.interior.visible = !ext; G.exterior.visible = ext;
   if (ext) { atualizarFachada(st); aplicarLuz(st); atualizarComposer(st); return; }
   const wc = c === "wc", xr = st.xray || (S.xray && S.step < 0 && svc().cfg.includes("xray"));
@@ -979,13 +996,21 @@ renderer.setAnimationLoop(now => {
 });
 
 /* ================= Arranque ================= */
-txProc();
-construirCasco(); construirTeto(); construirFeature(); construirWC(); construirSala(); construirComum(); construirObra(); construirInstalacoes(); construirRodape(); construirExterior();
-new RGBELoader(manager).load("assets/ceu.hdr", t => { t.mapping = THREE.EquirectangularReflectionMapping; hdr = t; scene.environment = t; aplicarEstado(); });
+construirCasco(); construirTeto(); construirFeature(); construirWC(); construirInstalacoes(); construirRodape();
+// ambiente provisório (instantâneo) até o céu HDR chegar
+{ const pm = new THREE.PMREMGenerator(renderer); scene.environment = pm.fromScene(new RoomEnvironment(), .04).texture; }
 montarServicos();
 await montarComposer();
 trocarServico(S.svc, true);
-let pronto = false;
-const fim = () => { if (pronto) return; pronto = true; aplicarEstado(); $("#loading").classList.add("off"); setTimeout(() => $("#hint").style.opacity = 0, 7000); };
-manager.onLoad = fim; setTimeout(fim, 12000);
+const fim = () => {
+  if (pronto) return; pronto = true; render();
+  $("#loading").classList.add("off"); setTimeout(() => $("#hint").style.opacity = 0, 7000);
+  // segundo plano: céu, planta, oclusão de ambiente
+  setTimeout(() => {
+    new RGBELoader(fundo).load("assets/ceu.hdr", t => { t.mapping = THREE.EquirectangularReflectionMapping; hdr = t; scene.environment = t; aplicarEstado(); });
+    construirComum(); ativarAO();
+  }, 150);
+};
+function verificarPronto() { if (pendentes <= 0 && arrancou) fim(); }
+arrancou = true; verificarPronto(); setTimeout(fim, 6000);
 window.__sr = { S, irPasso, trocarServico, irPara, aplicarEstado, scene, MOD };
