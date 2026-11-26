@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://pmremodelacoes.pt/sitemap.xml
